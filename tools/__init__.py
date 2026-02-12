@@ -20,6 +20,7 @@ AVAILABLE_FUNCTIONS = {
     "get_recommendations": execute_money_tool,
     "set_timezone": execute_settings_tool,
     "get_timezone": execute_settings_tool,
+    "get_current_time": execute_settings_tool,
 }
 
 

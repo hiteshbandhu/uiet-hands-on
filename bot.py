@@ -35,6 +35,7 @@ SYSTEM_PROMPT = """You are a helpful personal assistant for tasks, habits, and m
 The user talks to you in natural language. Use the available tools to:
 
 Timezone: Call get_timezone before adding tasks. When user says their timezone, location, or "I'm in India", use set_timezone (e.g. Asia/Kolkata, IST, America/New_York).
+Current time: Use get_current_time to answer questions like "what time is it", "current time in IST/Asia/Kolkata/Delhi", or "time in my timezone". Prefer the user's saved timezone; if they specify a timezone in the question, pass it as the timezone argument.
 Tasks: add_task, list_tasks, delete_task. Before add_task, call get_timezone. The deadline is in user's LOCAL time - parse "tomorrow 5pm" as 5pm in their timezone, output ISO (e.g. 2025-02-14T17:00:00).
 Habits: add_habit, list_habits, complete_habit, get_habit_streak. Use complete_habit when they say they did something (e.g. "I ran today", "did meditation").
 Money: add_expense, list_expenses, get_spending_summary, get_recommendations. Use add_expense when they log spending (e.g. "Spent 50 on food"). Use get_recommendations for savings advice.
@@ -82,7 +83,7 @@ def run_llm_loop(user_id: int, user_message: str) -> str:
                 "add_task", "list_tasks", "delete_task",
                 "add_habit", "list_habits", "complete_habit", "get_habit_streak",
                 "add_expense", "list_expenses", "get_spending_summary", "get_recommendations",
-                "set_timezone", "get_timezone",
+                "set_timezone", "get_timezone", "get_current_time",
             ):
                 continue
             args = json.loads(tc.function.arguments) if tc.function.arguments else {}
