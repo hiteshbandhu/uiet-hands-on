@@ -3,8 +3,9 @@ import json
 from tools.tasks import TOOLS as TASK_TOOLS, execute_task_tool
 from tools.habits import TOOLS as HABIT_TOOLS, execute_habit_tool
 from tools.money import TOOLS as MONEY_TOOLS, execute_money_tool
+from tools.settings import TOOLS as SETTINGS_TOOLS, execute_settings_tool
 
-TOOLS_SCHEMA = TASK_TOOLS + HABIT_TOOLS + MONEY_TOOLS
+TOOLS_SCHEMA = TASK_TOOLS + HABIT_TOOLS + MONEY_TOOLS + SETTINGS_TOOLS
 AVAILABLE_FUNCTIONS = {
     "add_task": execute_task_tool,
     "list_tasks": execute_task_tool,
@@ -17,6 +18,8 @@ AVAILABLE_FUNCTIONS = {
     "list_expenses": execute_money_tool,
     "get_spending_summary": execute_money_tool,
     "get_recommendations": execute_money_tool,
+    "set_timezone": execute_settings_tool,
+    "get_timezone": execute_settings_tool,
 }
 
 

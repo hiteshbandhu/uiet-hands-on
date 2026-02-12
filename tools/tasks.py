@@ -13,7 +13,7 @@ TOOLS = [
                     "title": {"type": "string", "description": "Short description of the task"},
                     "deadline": {
                         "type": "string",
-                        "description": "Deadline in ISO 8601 format (e.g. 2025-02-13T17:00:00). Parse natural language like 'tomorrow 5pm' into ISO.",
+                        "description": "Deadline in ISO 8601 format as user's LOCAL time (e.g. 2025-02-14T17:00:00). Call get_timezone first - interpret 'tomorrow 5pm' as 5pm in user's timezone.",
                     },
                 },
                 "required": ["title", "deadline"],

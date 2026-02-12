@@ -2,8 +2,32 @@
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).parent / "data" / "assistant.db"
+
+
+def get_user_local_now(user_id: int) -> datetime:
+    """Get current datetime in user's local timezone."""
+    tz_str = get_user_timezone_or_utc(user_id)
+    return datetime.now(ZoneInfo(tz_str))
+
+
+def get_user_local_date(user_id: int) -> str:
+    """Get today's date (YYYY-MM-DD) in user's timezone."""
+    return get_user_local_now(user_id).strftime("%Y-%m-%d")
+
+
+def _get_utc_range_for_local_date(user_id: int, date_str: str) -> tuple[str, str]:
+    """Get (start_utc, end_utc) ISO range for a local date in user's timezone."""
+    tz_str = get_user_timezone_or_utc(user_id)
+    tz = ZoneInfo(tz_str)
+    start_local = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=tz)
+    from datetime import timedelta
+    end_local = start_local + timedelta(days=1) - timedelta(microseconds=1)
+    start_utc = start_local.astimezone(ZoneInfo("UTC")).isoformat()
+    end_utc = end_local.astimezone(ZoneInfo("UTC")).isoformat()
+    return (start_utc, end_utc)
 
 
 def get_connection():
@@ -56,6 +80,98 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                last_habit_reminder_date TEXT,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# --- User settings ---
+
+def get_user_timezone(user_id: int) -> str | None:
+    """Get user's timezone (IANA, e.g. Asia/Kolkata). Returns None if not set."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT timezone FROM user_settings WHERE user_id = ? AND timezone != 'UTC'",
+            (user_id,),
+        ).fetchone()
+        return row["timezone"] if row else None
+    finally:
+        conn.close()
+
+
+def set_user_timezone(user_id: int, timezone: str) -> None:
+    """Set user's timezone. Creates or updates user_settings."""
+    conn = get_connection()
+    try:
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            """INSERT INTO user_settings (user_id, timezone, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET timezone = ?, updated_at = ?""",
+            (user_id, timezone, now, timezone, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_user_settings(user_id: int) -> dict | None:
+    """Get full user settings row, or None if not set."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_user_timezone_or_utc(user_id: int) -> str:
+    """Get user's timezone, or 'UTC' if not set."""
+    tz = get_user_timezone(user_id)
+    return tz if tz else "UTC"
+
+
+def get_last_habit_reminder_date(user_id: int) -> str | None:
+    """Get the last date (YYYY-MM-DD) we sent habit reminder to this user."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT last_habit_reminder_date FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return row["last_habit_reminder_date"] if row and row["last_habit_reminder_date"] else None
+    finally:
+        conn.close()
+
+
+def set_last_habit_reminder_date(user_id: int, date_str: str) -> None:
+    """Record that we sent habit reminder on this date (user's local)."""
+    conn = get_connection()
+    try:
+        now = datetime.utcnow().isoformat()
+        existing = conn.execute("SELECT 1 FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE user_settings SET last_habit_reminder_date = ?, updated_at = ? WHERE user_id = ?",
+                (date_str, now, user_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO user_settings (user_id, timezone, last_habit_reminder_date, updated_at) VALUES (?, 'UTC', ?, ?)",
+                (user_id, date_str, now),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -63,13 +179,32 @@ def init_db():
 
 # --- Tasks ---
 
-def add_task(user_id: int, title: str, deadline: str) -> dict:
-    """Add a task. deadline should be ISO 8601."""
+def _deadline_local_to_utc(deadline_iso: str, timezone_str: str) -> str:
+    """Convert deadline from user's local time to UTC. Returns UTC ISO string."""
+    from zoneinfo import ZoneInfo
+    # Parse as naive datetime in user's timezone
+    dt_local = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
+    if dt_local.tzinfo is not None:
+        # Already has TZ, convert to UTC
+        return dt_local.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S")
+    tz = ZoneInfo(timezone_str)
+    dt_aware = dt_local.replace(tzinfo=tz)
+    return dt_aware.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def add_task(user_id: int, title: str, deadline: str, timezone_override: str | None = None) -> dict:
+    """Add a task. deadline is ISO 8601 in user's LOCAL time; we convert to UTC for storage."""
     conn = get_connection()
     try:
+        tz = timezone_override or get_user_timezone_or_utc(user_id)
+        try:
+            deadline_utc = _deadline_local_to_utc(deadline, tz)
+        except Exception:
+            deadline_utc = deadline.replace("Z", "").strip()[:19]  # Fallback: use as-is
+
         cur = conn.execute(
             "INSERT INTO tasks (user_id, title, deadline, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, title, deadline, datetime.utcnow().isoformat()),
+            (user_id, title, deadline_utc, datetime.utcnow().isoformat()),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -192,18 +327,19 @@ def get_habit_by_id_or_name(user_id: int, habit_id: int | None = None, name: str
 
 
 def complete_habit(habit_id: int, user_id: int) -> bool:
-    """Record a habit completion for today. Returns True if recorded."""
+    """Record a habit completion for today (user's local date). Returns True if recorded."""
     conn = get_connection()
     try:
-        # Check habit belongs to user
         row = conn.execute("SELECT id FROM habits WHERE id = ? AND user_id = ?", (habit_id, user_id)).fetchone()
         if not row:
             return False
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        # Avoid duplicate for same day
+        today_local = get_user_local_date(user_id)
+        start_utc, end_utc = _get_utc_range_for_local_date(user_id, today_local)
+        # Avoid duplicate for same day in user's timezone
         existing = conn.execute(
-            "SELECT 1 FROM habit_completions WHERE habit_id = ? AND date(completed_at) = date(?)",
-            (habit_id, datetime.utcnow().isoformat()),
+            """SELECT 1 FROM habit_completions
+               WHERE habit_id = ? AND completed_at >= ? AND completed_at <= ?""",
+            (habit_id, start_utc, end_utc),
         ).fetchone()
         if existing:
             return True  # Already completed today
@@ -249,18 +385,19 @@ def get_habit_streak_count(habit_id: int) -> int:
 
 
 def get_habits_without_completion_today(user_id: int) -> list[dict]:
-    """Get habits that have no completion recorded for today (for reminders)."""
+    """Get habits that have no completion recorded for today (user's local date)."""
     conn = get_connection()
     try:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today_local = get_user_local_date(user_id)
+        start_utc, end_utc = _get_utc_range_for_local_date(user_id, today_local)
         rows = conn.execute(
             """SELECT h.* FROM habits h
                WHERE h.user_id = ?
                AND NOT EXISTS (
                  SELECT 1 FROM habit_completions c
-                 WHERE c.habit_id = h.id AND date(c.completed_at) = ?
+                 WHERE c.habit_id = h.id AND c.completed_at >= ? AND c.completed_at <= ?
                )""",
-            (user_id, today),
+            (user_id, start_utc, end_utc),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -268,24 +405,25 @@ def get_habits_without_completion_today(user_id: int) -> list[dict]:
 
 
 def get_all_users_with_incomplete_habits_today() -> dict[int, list[dict]]:
-    """Get user_id -> list of habits without completion today. For reminder job."""
+    """Get user_id -> list of habits without completion today (each user's local date)."""
     conn = get_connection()
     try:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        rows = conn.execute(
-            """SELECT h.* FROM habits h
-               WHERE NOT EXISTS (
-                 SELECT 1 FROM habit_completions c
-                 WHERE c.habit_id = h.id AND date(c.completed_at) = ?
-               )""",
-            (today,),
-        ).fetchall()
+        # Get all habits with their user_id
+        habits = conn.execute("SELECT * FROM habits").fetchall()
         by_user = {}
-        for r in rows:
+        for r in habits:
             uid = r["user_id"]
-            if uid not in by_user:
-                by_user[uid] = []
-            by_user[uid].append(dict(r))
+            today_local = get_user_local_date(uid)
+            start_utc, end_utc = _get_utc_range_for_local_date(uid, today_local)
+            has_completion = conn.execute(
+                """SELECT 1 FROM habit_completions c
+                   WHERE c.habit_id = ? AND c.completed_at >= ? AND c.completed_at <= ?""",
+                (r["id"], start_utc, end_utc),
+            ).fetchone()
+            if not has_completion:
+                if uid not in by_user:
+                    by_user[uid] = []
+                by_user[uid].append(dict(r))
         return by_user
     finally:
         conn.close()
